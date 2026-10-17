@@ -6,6 +6,8 @@ Script en [Nim](https://nim-lang.org/documentation.html) que descarga precios hi
 - **ETFs de Vanguard**: VOO, VTI, VEA, VWO, VXUS, BND, VNQ, VIG, VUG, VTV, VOOG, VOOV, VB, VO, VGT, VHT, VFH, VDE, VAW, VCR, VPL.
 - **Mega-cap EEUU**: se descarga dinámicamente (no hardcodeado) desde el CSV de holdings del ETF **iShares S&P 100 (OEF)**, filtrando solo posiciones de renta variable de EEUU (~100 tickers: NVDA, AAPL, MSFT, AMZN, GOOGL, ...).
 
+Las listas de Chile y Vanguard son editables sin recompilar: ver [Universos configurables](#universos-configurables-m-001).
+
 ## Qué hace
 
 ### Ranking de momentum (los 3 universos)
@@ -25,6 +27,14 @@ Para cada ticker:
 
 Los tickers con menos de 130 precios disponibles se descartan (no hay suficiente historia para calcular retorno a 6M y SMA50). Mientras corre, se muestra una barra de progreso por ticker (en consola interactiva se sobrescribe en una sola línea; si la salida está redirigida a un archivo, se imprime una línea por ticker).
 
+### Descargas: paralelas, con reintentos, timeout y caché
+
+Las ~175 descargas de precios (3 universos + histórico de 5 años para Markowitz) no son secuenciales: se despachan en pipeline, una petición nueva cada 200ms (el mismo ritmo que antes evitaba el rate-limiting de Yahoo Finance), pero sin esperar a que cada respuesta vuelva antes de lanzar la siguiente. Una corrida completa sin caché toma **menos de un minuto** en vez de los varios minutos de la versión secuencial original.
+
+- **Timeout**: ninguna petición espera más de 15 segundos; una conexión colgada ya no cuelga el programa entero.
+- **Reintentos**: si Yahoo Finance responde con rate-limit (429) o un error de servidor (5xx), o si la petición hace timeout, se reintenta hasta 3 veces con backoff (500ms, 1s). Un ticker inválido (4xx que no es 429) no se reintenta, porque reintentarlo no cambia el resultado.
+- **Caché por día**: cada combinación ticker/ventana de histórico se guarda en `.driftfolio_cache/` (no se sube al repo). Si corrés el programa varias veces el mismo día, los precios ya descargados se leen de ahí en vez de volver a pedirlos — una segunda corrida el mismo día toma bajo un segundo.
+
 ### Portafolio Markowitz (sobre el top-15 momentum de mega-cap EEUU)
 
 Tomando el top-15 por score de momentum del universo mega-cap, se construye el portafolio de mejor Sharpe:
@@ -40,7 +50,20 @@ Tomando el top-15 por score de momentum del universo mega-cap, se construye el p
 ### Exportación y logging
 
 - **CSV**: al final de cada corrida se exporta `driftfolio_resultados.csv` con los resultados de los 3 universos (`fecha,universo,ticker,ret1m,ret3m,ret6m,score,precio,sma50,sobre_sma50`), pensado para alimentar otro análisis o modelo. Se sobrescribe en cada ejecución.
-- **Log de errores**: todo error o advertencia (fallo de descarga de un ticker, histórico insuficiente para Markowitz, etc.) se registra con timestamp en `driftfolio_errors.log` (modo *append*, se acumula entre corridas) además de mostrarse en consola.
+- **Log de errores**: todo error o advertencia (fallo de descarga de un ticker, histórico insuficiente para Markowitz, etc.) se acumula durante la corrida y se vuelca al final con timestamp a `driftfolio_errors.log` (modo *append*, se acumula entre corridas) además de mostrarse en consola.
+
+## Universos configurables (M-001)
+
+Las listas de Chile y Vanguard están embebidas en el binario como *default*, así que driftfolio funciona sin ninguna configuración. Para editarlas sin recompilar, creá un `universes.json` en el directorio desde donde ejecutás driftfolio:
+
+```json
+{
+  "chile": ["CHILE.SN", "BSANTANDER.SN", "SQM-B.SN"],
+  "vanguard": ["VOO", "VTI", "VXUS"]
+}
+```
+
+Cualquier clave ausente (o que no sea una lista) conserva el default embebido para esa clave. Si el archivo existe pero no se puede parsear, se usan los defaults completos y queda registrado en `driftfolio_errors.log`. El mega-cap EEUU no es configurable acá porque se descarga dinámicamente del CSV de iShares.
 
 ## Requisitos
 
@@ -48,7 +71,7 @@ Tomando el top-15 por score de momentum del universo mega-cap, se construye el p
 - Conexión a internet (consume la API pública de Yahoo Finance y el CSV público de holdings de iShares)
 - OpenSSL disponible en el sistema (ver sección de compilación)
 
-No usa dependencias externas: solo módulos de la librería estándar (`std/httpclient`, `std/json`, `std/strutils`, `std/times`, `std/algorithm`, `std/strformat`, `std/sequtils`, `std/terminal`, `std/parsecsv`, `std/streams`, `std/os`, `std/math`, `std/unittest`).
+No usa dependencias externas: solo módulos de la librería estándar (`std/httpclient`, `std/asyncdispatch`, `std/json`, `std/strutils`, `std/times`, `std/algorithm`, `std/strformat`, `std/sequtils`, `std/terminal`, `std/parsecsv`, `std/streams`, `std/os`, `std/math`, `std/net`, `std/unittest`).
 
 ## Estructura del proyecto
 
@@ -56,25 +79,27 @@ Paquete Nimble con un módulo por responsabilidad, para que agregar un universo,
 
 ```
 driftfolio.nimble        # manifiesto del paquete (bin, deps, task test)
-src/driftfolio.nim       # entry point: orquesta todo el flujo (main)
+src/driftfolio.nim       # entry point async: orquesta todo el flujo (asyncMain)
 src/driftfolio/
   types.nim              # tipo Quote
-  errorlog.nim           # logging de errores (consola + driftfolio_errors.log)
-  universes.nim          # listas de tickers fijas (Chile, Vanguard)
-  marketdata.nim         # I/O: Yahoo Finance (precios, tasa libre de riesgo) e iShares (mega-cap)
+  errorlog.nim           # logging de errores (buffer en memoria + flush a driftfolio_errors.log)
+  universes.nim          # listas de tickers (defaults embebidos + universes.json opcional)
+  marketdata.nim         # I/O async: Yahoo Finance e iShares, con timeout/retry/caché
   analytics.nim          # cálculos puros: retornos, SMA, score de momentum
   display.nim            # salida por consola: colores, barra de progreso, tabla de pesos
-  ranking.nim            # orquesta el ranking de un universo (fetch + cálculo + tabla)
+  ranking.nim            # orquesta el ranking de un universo (pipeline de descargas + tabla)
   csvexport.nim          # exportación a CSV
   htmlreport.nim         # plantillas y generación del reporte HTML (Chart.js)
   linalg.nim             # álgebra lineal genérica (sistema lineal, proyección sobre simplex)
   markowitz.nim          # covarianza EWMA, optimización del portafolio, orquestación Markowitz
 tests/
-  test_analytics.nim     # calcReturn, calcSMA, momentumScore, buildQuote
-  test_linalg.nim        # solveLinearSystem, projectCappedSimplex, subMatrix
+  test_analytics.nim           # calcReturn, calcSMA, momentumScore, buildQuote
+  test_linalg.nim               # solveLinearSystem, projectCappedSimplex, subMatrix
+  test_marketdata_parsing.nim   # parseAdjClosePrices con JSON sintético (sin red)
+  test_universes.nim            # loadUniverses: defaults, archivo válido/parcial/inválido
 ```
 
-`analytics.nim` y `linalg.nim` son funciones puras (sin I/O), lo que permite testearlas de forma aislada; el resto de los módulos separan I/O (`marketdata`, `csvexport`, `htmlreport`) de orquestación (`ranking`, `markowitz`, `src/driftfolio.nim`).
+`analytics.nim`, `linalg.nim` y la función `marketdata.parseAdjClosePrices` son puros (sin I/O), lo que permite testearlos de forma aislada; el resto de los módulos separan I/O (`marketdata`, `csvexport`, `htmlreport`) de orquestación (`ranking`, `markowitz`, `src/driftfolio.nim`).
 
 ## Compilar y ejecutar
 
@@ -97,9 +122,9 @@ El archivo `src/driftfolio.nim.cfg` fuerza siempre `-d:ssl` (requerido para cons
 nimble test
 ```
 
-Corre los tests unitarios de `analytics.nim` y `linalg.nim` (las funciones puras del proyecto).
+Corre los tests unitarios de las funciones puras del proyecto (`analytics`, `linalg`, `marketdata.parseAdjClosePrices`, `universes.loadUniverses`).
 
-La corrida completa (3 universos + el histórico de 5 años para Markowitz, ~140 tickers en total) toma varios minutos, ya que hay una pausa de 200ms entre cada descarga para evitar rate-limiting de Yahoo Finance.
+La corrida completa (3 universos + el histórico de 5 años para Markowitz, ~175 descargas en total) toma menos de un minuto sin caché; con caché del mismo día, menos de un segundo (ver [Descargas](#descargas-paralelas-con-reintentos-timeout-y-caché)).
 
 ## Ejemplo de salida
 

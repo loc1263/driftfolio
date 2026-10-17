@@ -14,3 +14,5 @@ requires "nim >= 2.0.0"
 task test, "Corre los tests unitarios":
   exec "nim c -r tests/test_analytics.nim"
   exec "nim c -r tests/test_linalg.nim"
+  exec "nim c -r tests/test_marketdata_parsing.nim"
+  exec "nim c -r tests/test_universes.nim"

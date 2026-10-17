@@ -4,10 +4,11 @@
 ## cov = covarianza EWMA sobre 5 años de retornos diarios (RiskMetrics, lambda=0.94),
 ##       da más peso a los datos recientes sin descartar la historia larga
 
-import std/[httpclient, strformat, strutils, sequtils, math, os]
+import std/[asyncdispatch, strformat, strutils, sequtils, math]
 import ./types, ./linalg, ./marketdata, ./display, ./htmlreport, ./errorlog
 
 const
+  DispatchIntervalMs = 200
   MarkowitzTopN* = 15
   MarkowitzLookbackYears* = 5
   EwmaLambda = 0.94
@@ -91,23 +92,39 @@ proc portfolioStats*(weights, mu: seq[float], cov: seq[seq[float]],
   let sharpe = if vol > 0: (ret - riskFreeRate) / vol else: 0.0
   (ret, vol, sharpe)
 
-proc runMarkowitz*(client: HttpClient, topQuotes: seq[Quote]): string =
+proc runMarkowitz*(topQuotes: seq[Quote]): Future[string] {.async.} =
   echo "\n", "=".repeat(95)
   echo "MARKOWITZ - MEJOR PORTAFOLIO (top ", topQuotes.len, " por momentum, covarianza EWMA ", MarkowitzLookbackYears, " años)"
   echo "=".repeat(95)
 
-  let riskFreeRate = fetchRiskFreeRate(client)
+  let riskFreeRate = await fetchRiskFreeRate()
   echo fmt"Tasa libre de riesgo (^IRX, 13 semanas): {riskFreeRate * 100:.2f}%"
+
+  let lookbackDays = 365 * MarkowitzLookbackYears
+
+  # Pipeline de descargas (M-009): se despacha una petición nueva cada
+  # DispatchIntervalMs sin esperar la respuesta anterior, igual que en
+  # ranking.processUniverse. El mensaje se imprime cuando cada descarga
+  # realmente termina (callback), no al despacharla, para que refleje el
+  # avance real en vez de aparecer todo junto apenas se lanzan las peticiones.
+  echo "Descargando histórico de ", MarkowitzLookbackYears, " años para ", topQuotes.len, " activos..."
+  var futs = newSeq[Future[seq[float]]](topQuotes.len)
+  for idx, q in topQuotes:
+    let ticker = q.ticker
+    let wasAlreadyCached = isPriceCached(ticker, lookbackDays)
+    futs[idx] = fetchPrices(ticker, lookbackDays)
+    futs[idx].addCallback proc() =
+      echo "  Descargado: ", ticker
+    if idx < topQuotes.len - 1 and not wasAlreadyCached:
+      await sleepAsync(DispatchIntervalMs)
 
   var priceSeries: seq[seq[float]]
   var tickers: seq[string]
   var urls: seq[string]
   var muByTicker: seq[float]
 
-  for q in topQuotes:
-    echo "Descargando histórico de ", MarkowitzLookbackYears, " años: ", q.ticker
-    let prices = fetchPrices(client, q.ticker, 365 * MarkowitzLookbackYears)
-    sleep(200)
+  for idx, q in topQuotes:
+    let prices = await futs[idx]
     if prices.len < 500:
       logError("  omitido (histórico insuficiente): " & q.ticker)
       continue
@@ -166,10 +183,20 @@ proc runMarkowitz*(client: HttpClient, topQuotes: seq[Quote]): string =
   echo "Nota: pesos negativos implican posición corto, no ejecutable en un bróker normal."
 
   # --- Long-only con tope por posición (ejecutable en un bróker normal) ---
-  let loWeights = optimizeLongOnlyCapped(muExcess, cov, MaxWeightPerAsset)
+  # M-015: con el tope fijo (20%), si quedan pocos activos la restricción
+  # Σw_i=1 puede ser infactible (numAssets * cap < 1) y la proyección
+  # convergía en silencio a pesos que no suman 100%. Se sube el tope al
+  # mínimo que la hace factible, igual que ya hacía el portafolio
+  # concentrado más abajo, y se deja registrado si tuvo que subir.
+  let loCap = max(MaxWeightPerAsset, 1.0 / numAssets.float)
+  if loCap > MaxWeightPerAsset:
+    logError(fmt"Tope por posición subido de {MaxWeightPerAsset * 100:.0f}% a {loCap * 100:.0f}% " &
+      fmt"porque solo hay {numAssets} activos (con el tope original los pesos no podrían sumar 100%).")
+
+  let loWeights = optimizeLongOnlyCapped(muExcess, cov, loCap)
 
   echo ""
-  echo fmt"--- Long-only, tope {MaxWeightPerAsset * 100:.0f}% por posición (ejecutable en un bróker normal) ---"
+  echo fmt"--- Long-only, tope {loCap * 100:.0f}% por posición (ejecutable en un bróker normal) ---"
   printWeights(tickers, loWeights, 0.0001)
 
   let (loPortReturn, loPortVolAnnual, loSharpe) = portfolioStats(loWeights, muByTicker, cov, riskFreeRate)
@@ -179,7 +206,7 @@ proc runMarkowitz*(client: HttpClient, topQuotes: seq[Quote]): string =
   echo fmt"Volatilidad anualizada (cov. EWMA): {loPortVolAnnual * 100:.2f}%"
   echo fmt"Sharpe (vs. tasa libre de riesgo): {loSharpe:.2f}"
 
-  let fullHtml = markowitzHtmlSection(tickers, urls, weights, loWeights, riskFreeRate, MaxWeightPerAsset,
+  let fullHtml = markowitzHtmlSection(tickers, urls, weights, loWeights, riskFreeRate, loCap,
     MarkowitzLookbackYears,
     (ret: portReturn, vol: portVolAnnual, sharpe: sharpe),
     (ret: loPortReturn, vol: loPortVolAnnual, sharpe: loSharpe))
@@ -210,7 +237,7 @@ proc runMarkowitz*(client: HttpClient, topQuotes: seq[Quote]): string =
     echo fmt"Volatilidad anualizada (cov. EWMA): {concStats.vol * 100:.2f}%"
     echo fmt"Sharpe (vs. tasa libre de riesgo): {concStats.sharpe:.2f}"
 
-    concentratedHtml = concentratedHtmlSection(subTickers, subUrls, concWeights, concStats, cap, MaxWeightPerAsset, numAssets)
+    concentratedHtml = concentratedHtmlSection(subTickers, subUrls, concWeights, concStats, cap, loCap, numAssets)
   else:
     logError(fmt"No hay suficientes activos ({numAssets}) para armar el portafolio concentrado de {MarkowitzFinalN}.")
 

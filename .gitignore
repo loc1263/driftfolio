@@ -12,6 +12,12 @@ driftfolio_resultados.html
 driftfolio_errors.log
 out.txt
 
+# Caché de precios por día (M-010)
+.driftfolio_cache/
+
 # Cache de compilación de Nim
 nimcache/
 /nimcache
+
+# Estado local de Claude Code (no es parte del proyecto)
+.claude/
