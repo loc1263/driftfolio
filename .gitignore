@@ -1,0 +1,17 @@
+# Notas internas de mejoras pendientes (no se publica)
+MEJORAS.md
+
+# Binarios compilados (solo en la raíz: no afecta a src/driftfolio/)
+/driftfolio
+/driftfolio.exe
+*.exe
+
+# Salidas generadas en cada corrida
+driftfolio_resultados.csv
+driftfolio_resultados.html
+driftfolio_errors.log
+out.txt
+
+# Cache de compilación de Nim
+nimcache/
+/nimcache
