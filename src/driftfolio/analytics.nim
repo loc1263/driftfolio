@@ -2,17 +2,7 @@
 ## Son funciones puras (sin I/O) para poder testearlas de forma aislada.
 
 import ./types
-
-const
-  MinHistoryDays* = 130 ## tickers con menos historia que esto se descartan (no hay 6M + SMA50)
-  Return1MDays* = 21
-  Return3MDays* = 63
-  Return6MDays* = 126
-  Sma50Period* = 50
-
-  Return1MWeight* = 0.20
-  Return3MWeight* = 0.40
-  Return6MWeight* = 0.40
+import ./config
 
 proc calcReturn*(prices: seq[float], days: int): float =
   if prices.len < days + 1:
@@ -31,18 +21,21 @@ proc calcSMA*(prices: seq[float], period: int): float =
     sum += prices[i]
   sum / period.float
 
-proc momentumScore*(ret1m, ret3m, ret6m: float): float =
-  Return1MWeight * ret1m + Return3MWeight * ret3m + Return6MWeight * ret6m
+proc momentumScore*(ret1m, ret3m, ret6m: float,
+                     w1 = DefaultConfig.ret1mWeight,
+                     w3 = DefaultConfig.ret3mWeight,
+                     w6 = DefaultConfig.ret6mWeight): float =
+  w1 * ret1m + w3 * ret3m + w6 * ret6m
 
-proc buildQuote*(ticker, url: string, prices: seq[float]): Quote =
-  ## Requiere `prices.len >= MinHistoryDays` (responsabilidad del llamador).
+proc buildQuote*(ticker, url: string, prices: seq[float], cfg: Config = DefaultConfig): Quote =
+  ## Requiere `prices.len >= cfg.minHistoryDays` (responsabilidad del llamador).
   let
-    r1 = calcReturn(prices, Return1MDays)
-    r3 = calcReturn(prices, Return3MDays)
-    r6 = calcReturn(prices, Return6MDays)
-    sma50 = calcSMA(prices, Sma50Period)
+    r1 = calcReturn(prices, cfg.ret1mDays)
+    r3 = calcReturn(prices, cfg.ret3mDays)
+    r6 = calcReturn(prices, cfg.ret6mDays)
+    sma = calcSMA(prices, cfg.smaPeriod)
     price = prices[^1]
-    score = momentumScore(r1, r3, r6)
+    score = momentumScore(r1, r3, r6, cfg.ret1mWeight, cfg.ret3mWeight, cfg.ret6mWeight)
 
   Quote(
     ticker: ticker,
@@ -52,6 +45,6 @@ proc buildQuote*(ticker, url: string, prices: seq[float]): Quote =
     ret6m: r6,
     score: score,
     price: price,
-    sma50: sma50,
-    aboveSma50: price > sma50
+    sma50: sma,
+    aboveSma50: price > sma
   )

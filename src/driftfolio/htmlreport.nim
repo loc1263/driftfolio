@@ -1,7 +1,10 @@
 ## Reporte HTML: tablas, links a stockanalysis.com y gráficos (Chart.js).
+## Comparte diseño (colores, masthead, quicknav, tablas, toggle de tema,
+## mobile) con el reporte de análisis fundamental vía ../theme.
 
 import std/[strutils, sequtils, algorithm, strformat]
 import ./types, ./errorlog
+import ../theme
 
 proc escapeHtml*(s: string): string =
   s.multiReplace([("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ("\"", "&quot;")])
@@ -69,8 +72,9 @@ const DoughnutChartTemplate = """
 const UniverseSectionTemplate = """
   <section>
     <h2>__TITLE__</h2>
-    <p class="muted">Total de activos: __TOTAL__ | Sobre SMA50: __ABOVE__</p>
+    <p class="subtitle">Total de activos: __TOTAL__ | Sobre SMA50: __ABOVE__</p>
     <div class="chart-wrap"><canvas id="__CHARTID__"></canvas></div>
+    <div class="table-wrap">
     <table>
       <thead>
         <tr>
@@ -82,6 +86,7 @@ const UniverseSectionTemplate = """
 __ROWS__
       </tbody>
     </table>
+    </div>
 __CHARTSCRIPT__
   </section>
 """
@@ -135,101 +140,93 @@ proc universeHtmlSection*(title: string, results: seq[Quote], chartId: string): 
     ("__CHARTSCRIPT__", chartScript)
   ])
 
-const HtmlHead = """<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DriftFolio</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-<style>
-  :root {
-    color-scheme: light;
-    --bg: #f7f8fa; --panel: #ffffff; --text: #1a1d23; --muted: #5b6472;
-    --pos: #1a7f37; --neg: #cf222e; --border: #e1e4e8; --accent: #1f6feb;
-  }
-  * { box-sizing: border-box; }
-  body {
-    background: var(--bg); color: var(--text); margin: 0; padding: 24px;
-    font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-  }
-  h1 { margin-bottom: 4px; }
-  .subtitle { color: var(--muted); margin-top: 0; margin-bottom: 32px; }
-  section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-    padding: 20px 24px; margin-bottom: 28px; }
-  h2 { margin-top: 0; }
-  h3 { margin-bottom: 8px; }
-  .muted { color: var(--muted); font-size: 0.9em; }
-  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 0.92em; }
-  th, td { padding: 6px 10px; text-align: right; border-bottom: 1px solid var(--border); }
+const ExtraStyle = """
+  h3 { margin: 18px 0 8px; font-size: 1rem; }
+  table { min-width: 640px; }
   th:nth-child(2), td:nth-child(2) { text-align: left; }
   table.weights th:first-child, table.weights td:first-child { text-align: left; }
-  th { color: var(--muted); font-weight: 600; }
-  tbody tr:hover { background: rgba(127,127,127,0.08); }
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  .pos { color: var(--pos); }
-  .neg { color: var(--neg); }
   .chart-wrap { max-width: 720px; margin: 8px 0 20px; }
   .chart-wrap-pie { max-width: 420px; }
-</style>
-</head>
-<body>
 """
 
-proc writeHtmlReport*(filename: string, generatedAt: string, sections: seq[string]) =
+const ExtraHead = """<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>"""
+
+const Footer = """El score de momentum pondera retornos a 1, 3 y 6 meses (ver fórmula arriba); la columna
+    &gt;SMA50 es informativa y no excluye activos del ranking. El portafolio Markowitz usa el score de
+    momentum como proxy de retorno esperado y una covarianza EWMA sobre varios años de histórico diario.<br/>
+    <strong>No es una recomendación de inversión.</strong>"""
+
+proc writeHtmlReport*(filename: string, generatedAt: string,
+                       sections: seq[tuple[label: string, html: string]]) =
+  let meta = "Generado: " & escapeHtml(generatedAt) &
+    " &middot; Score = 20% &times; Retorno 1M + 40% &times; Retorno 3M + 40% &times; Retorno 6M " &
+    "&middot; &gt;SMA50 es informativo (no excluye activos)"
+
+  let html = renderPage(
+    title = "DriftFolio",
+    logo = "DF",
+    h1 = "DriftFolio &middot; Momentum + Markowitz",
+    meta = meta,
+    footer = Footer,
+    sections = sections,
+    extraStyle = ExtraStyle,
+    extraHead = ExtraHead
+  )
+
   var f: File
   if not open(f, filename, fmWrite):
     logError("No se pudo escribir el archivo HTML: " & filename)
     return
   defer: f.close()
-
-  f.write(HtmlHead)
-  f.write("<h1>DriftFolio &middot; Momentum + Markowitz</h1>\n")
-  f.write("<p class=\"subtitle\">Generado: " & escapeHtml(generatedAt) &
-    " &middot; Score = 20% &times; Retorno 1M + 40% &times; Retorno 3M + 40% &times; Retorno 6M " &
-    "&middot; &gt;SMA50 es informativo (no excluye activos)</p>\n")
-  for s in sections:
-    f.write(s)
-  f.write("</body>\n</html>\n")
+  f.write(html)
 
   echo "Reporte HTML exportado a ", filename
 
-proc weightsRowsHtml*(tickers, urls: seq[string], weights: seq[float], minWeight = 0.0): string =
+proc weightsRowsHtml*(tickers, urls: seq[string], weights: seq[float], minWeight = 0.0, useAbs = false): string =
+  ## `useAbs = true` filtra por `|peso| > minWeight` en vez de `peso >
+  ## minWeight`, para no esconder posiciones cortas (M-014) en la tabla del
+  ## portafolio "sin restricciones". Los pesos negativos se marcan con la
+  ## misma clase CSS "neg" que usa el resto del reporte.
   var order = toSeq(0 ..< weights.len)
   order.sort(proc (a, b: int): int = cmp(weights[b], weights[a]))
   var rows: seq[string]
   for i in order:
-    if weights[i] > minWeight:
+    let shown = if useAbs: abs(weights[i]) > minWeight else: weights[i] > minWeight
+    if shown:
+      let cls = if weights[i] < 0: " class=\"neg\"" else: ""
       rows.add fmt"""        <tr>
           <td><a href="{escapeHtml(urls[i])}" target="_blank" rel="noopener noreferrer">{escapeHtml(tickers[i])}</a></td>
-          <td>{weights[i] * 100:.2f}</td>
+          <td{cls}>{weights[i] * 100:.2f}</td>
         </tr>"""
   rows.join("\n")
 
 const MarkowitzSectionTemplate = """
   <section>
     <h2>Markowitz - mejor portafolio (top __N__ por momentum, covarianza EWMA __YEARS__ años)</h2>
-    <p class="muted">Tasa libre de riesgo (^IRX, 13 semanas): __RF__%</p>
+    <p class="subtitle">Tasa libre de riesgo (^IRX, 13 semanas): __RF__%</p>
 
     <h3>Sin restricciones (teórico, permite posiciones en corto)</h3>
+    <div class="table-wrap">
     <table class="weights">
       <thead><tr><th>Ticker</th><th>Peso %</th></tr></thead>
       <tbody>
 __ROWS_UNCONSTRAINED__
       </tbody>
     </table>
+    </div>
     <p>Retorno esperado: <strong>__RET1__%</strong> &middot; Volatilidad anualizada: <strong>__VOL1__%</strong> &middot; Sharpe: <strong>__SHARPE1__</strong></p>
     <p class="muted">Nota: pesos negativos implican posición corto, no ejecutable en un bróker normal.</p>
 
     <h3>Long-only, tope __CAP__% por posición (ejecutable en un bróker normal)</h3>
     <div class="chart-wrap chart-wrap-pie"><canvas id="chart-markowitz"></canvas></div>
+    <div class="table-wrap">
     <table class="weights">
       <thead><tr><th>Ticker</th><th>Peso %</th></tr></thead>
       <tbody>
 __ROWS_LONGONLY__
       </tbody>
     </table>
+    </div>
     <p>Retorno esperado: <strong>__RET2__%</strong> &middot; Volatilidad anualizada: <strong>__VOL2__%</strong> &middot; Sharpe: <strong>__SHARPE2__</strong></p>
 __CHARTSCRIPT__
   </section>
@@ -259,7 +256,7 @@ proc markowitzHtmlSection*(tickers, urls: seq[string], weights, loWeights: seq[f
     ("__N__", $tickers.len),
     ("__YEARS__", $lookbackYears),
     ("__RF__", formatFloat(riskFreeRate * 100, ffDecimal, 2)),
-    ("__ROWS_UNCONSTRAINED__", weightsRowsHtml(tickers, urls, weights)),
+    ("__ROWS_UNCONSTRAINED__", weightsRowsHtml(tickers, urls, weights, useAbs = true)),
     ("__RET1__", formatFloat(unconstrainedStats.ret * 100, ffDecimal, 2)),
     ("__VOL1__", formatFloat(unconstrainedStats.vol * 100, ffDecimal, 2)),
     ("__SHARPE1__", formatFloat(unconstrainedStats.sharpe, ffDecimal, 2)),
@@ -274,16 +271,18 @@ proc markowitzHtmlSection*(tickers, urls: seq[string], weights, loWeights: seq[f
 const ConcentratedSectionTemplate = """
   <section>
     <h2>Portafolio concentrado: top __N__ por momentum (re-optimizado)</h2>
-    <p class="muted">Son los __N__ activos de mayor score dentro del top __FULLN__, pero con pesos
+    <p class="subtitle">Son los __N__ activos de mayor score dentro del top __FULLN__, pero con pesos
     recalculados desde su propia matriz de covarianza __N__×__N__ — no es un recorte de los pesos
     del portafolio de __FULLN__ activos (ver nota abajo).</p>
     <div class="chart-wrap chart-wrap-pie"><canvas id="chart-concentrado"></canvas></div>
+    <div class="table-wrap">
     <table class="weights">
       <thead><tr><th>Ticker</th><th>Peso %</th></tr></thead>
       <tbody>
 __ROWS__
       </tbody>
     </table>
+    </div>
     <p>Retorno esperado: <strong>__RET__%</strong> &middot; Volatilidad anualizada: <strong>__VOL__%</strong> &middot; Sharpe: <strong>__SHARPE__</strong></p>
     <p class="muted">Tope por posición: __CAP__% (más holgado que el __FULLCAP__% del portafolio de __FULLN__, porque hay menos nombres entre los que repartir el 100%).</p>
 __CHARTSCRIPT__

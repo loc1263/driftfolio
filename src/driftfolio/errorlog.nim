@@ -12,7 +12,10 @@ const ErrorLogFile* = "driftfolio_errors.log"
 var buffer: seq[string] = @[]
 
 proc logError*(msg: string) =
-  let timestamp = now().format("yyyy-MM-dd HH:mm:ss")
+  # Milisegundos (M-021): con descargas concurrentes, dos errores del mismo
+  # segundo son normales — sin milisegundos no se puede saber cuál pasó
+  # primero ni calcular cuánto tardó una descarga entre el log y el error.
+  let timestamp = now().format("yyyy-MM-dd HH:mm:ss'.'fff")
   buffer.add("[" & timestamp & "] " & msg)
   echo msg
 

@@ -21,6 +21,13 @@ const
 
   CacheDir* = ".driftfolio_cache"  ## M-010: precios cacheados por ticker/día.
 
+var skipCache* = false
+  ## M-022: con --no-cache, ignora los precios ya cacheados hoy y vuelve a
+  ## descargar todo desde Yahoo Finance. No borra `.driftfolio_cache/`: los
+  ## archivos frescos que se descarguen igual se escriben ahí (writePriceCache
+  ## no mira este flag), así que una corrida normal posterior el mismo día
+  ## vuelve a aprovechar el caché ya actualizado.
+
 # ============================================================
 # Enlaces a stockanalysis.com
 # ============================================================
@@ -78,7 +85,10 @@ proc isPriceCached*(ticker: string, lookbackDays: int): bool =
   ## Chequeo barato (solo existencia de archivo) para que el orquestador
   ## (`ranking`/`markowitz`) pueda saltarse la pausa de ritmo de despacho
   ## cuando sabe que esa descarga en particular no va a pegarle a la red.
-  fileExists(cacheFilePath(ticker, lookbackDays))
+  ## Con --no-cache devuelve siempre false: esa descarga sí va a pegarle a
+  ## la red, así que el ritmo de despacho (pacing) debe respetarse igual
+  ## que en una corrida sin caché.
+  not skipCache and fileExists(cacheFilePath(ticker, lookbackDays))
 
 proc readPriceCache(path: string): seq[float] =
   try:
@@ -164,7 +174,7 @@ proc fetchMegaCapTickers*(): Future[seq[string]] {.async.} =
 
 proc fetchPrices*(ticker: string, lookbackDays: int = 365): Future[seq[float]] {.async.} =
   let cachePath = cacheFilePath(ticker, lookbackDays)
-  if fileExists(cachePath):
+  if not skipCache and fileExists(cachePath):
     let cached = readPriceCache(cachePath)
     if cached.len > 0:
       return cached

@@ -9,47 +9,64 @@
 ## Los aciertos de caché (M-010) no consumen ese ritmo de despacho.
 
 import std/[asyncdispatch, algorithm, strformat, strutils, sequtils]
-import ./types, ./analytics, ./marketdata, ./display
+import ./types, ./analytics, ./marketdata, ./display, ./config
 
 const DispatchIntervalMs = 200
 
-proc processUniverse*(name: string, tickers: seq[string]): Future[seq[Quote]] {.async.} =
+proc dispatchDownload(ticker: string, lookbackDays, total: int, completed: ref int): Future[seq[float]] =
+  ## proc de nivel superior a propósito: si el callback de abajo se arma
+  ## inline dentro del `for` de processUniverse (como estaba antes), Nim
+  ## reusa la misma variable de loop entre iteraciones y TODOS los
+  ## callbacks terminan capturando el último ticker dispatchado en vez del
+  ## que realmente completaron cada uno (confirmado con un repro aislado:
+  ## ver el bug reportado por el usuario, que mostraba el mismo ticker
+  ## repetido N veces). Al recibir `ticker` como parámetro, cada llamada
+  ## tiene su propio stack frame y el closure de abajo captura ESE valor,
+  ## no una referencia compartida.
+  result = fetchPrices(ticker, lookbackDays)
+  result.addCallback proc() =
+    # La barra avanza con la descarga que realmente termina, no con el
+    # orden de despacho: si no, al ya estar todas en vuelo por el pipeline,
+    # el segundo loop (que solo *espera* en orden) las recorre casi
+    # instantáneo y la barra salta de 0% a 100% sin reflejar la espera real.
+    inc completed[]
+    printProgress(completed[], total, ticker)
+
+proc processUniverse*(name: string, tickers: seq[string], cfg: Config = DefaultConfig): Future[seq[Quote]] {.async.} =
   ## `tickers` es `seq[string]` (no `openArray`) porque esta proc es async:
   ## el cuerpo se compila como una closure que puede sobrevivir a un `await`,
   ## y un `openArray` (puntero + largo, sin dueño) no es seguro de capturar ahí.
   echo "\n", "=".repeat(95)
   echo "RANKING DE MOMENTUM - ", name
-  echo "Columna >SMA50 es informativa (no excluye activos)"
+  echo fmt"Columna >SMA{cfg.smaPeriod} es informativa (no excluye activos)"
   echo "=".repeat(95)
 
   if tickers.len == 0:
     echo "(universo vacío, se omite)"
     return @[]
 
+  # Si el usuario estiró ret6mDays más allá de lo que entra en ~1 año
+  # calendario, se pide más historia para no quedarse corto (M-006): el
+  # factor 2 deja margen para fines de semana/feriados (~69% de los días
+  # calendario son hábiles).
+  let lookbackDays = max(365, cfg.ret6mDays * 2)
+
   var futs = newSeq[Future[seq[float]]](tickers.len)
-  var completed = 0
+  var completed = new(int)
   for idx, ticker in tickers:
-    let justFinished = ticker  # copia propia de esta iteración para el callback
-    let wasAlreadyCached = isPriceCached(ticker, 365)
-    futs[idx] = fetchPrices(ticker)
-    futs[idx].addCallback proc() =
-      # La barra avanza con la descarga que realmente termina, no con el
-      # orden de despacho: si no, al ya estar todas en vuelo por el pipeline,
-      # el segundo loop (que solo *espera* en orden) las recorre casi
-      # instantáneo y la barra salta de 0% a 100% sin reflejar la espera real.
-      inc completed
-      printProgress(completed, tickers.len, justFinished)
+    let wasAlreadyCached = isPriceCached(ticker, lookbackDays)
+    futs[idx] = dispatchDownload(ticker, lookbackDays, tickers.len, completed)
     if idx < tickers.len - 1 and not wasAlreadyCached:
       await sleepAsync(DispatchIntervalMs)
 
   var results: seq[Quote]
   for idx, ticker in tickers:
     let prices = await futs[idx]
-    if prices.len < MinHistoryDays:
+    if prices.len < cfg.minHistoryDays:
       continue
 
     let cleanTicker = ticker.replace(".SN", "")
-    results.add(buildQuote(cleanTicker, stockAnalysisUrl(ticker), prices))
+    results.add(buildQuote(cleanTicker, stockAnalysisUrl(ticker), prices, cfg))
 
   clearProgress()
 
@@ -59,7 +76,8 @@ proc processUniverse*(name: string, tickers: seq[string]): Future[seq[Quote]] {.
   )
 
   # Imprimir tabla
-  echo fmt"""{"#":<4} {"Ticker":<12} {"1M %":>8} {"3M %":>8} {"6M %":>8} {"Score":>9} {"Precio":>9} {"SMA50":>9} {">SMA50":>8}"""
+  let smaCol = fmt">SMA{cfg.smaPeriod}"
+  echo fmt"""{"#":<4} {"Ticker":<12} {"1M %":>8} {"3M %":>8} {"6M %":>8} {"Score":>9} {"Precio":>9} {"SMA":>9} {smaCol:>8}"""
   echo "-".repeat(95)
 
   for i, q in results:
@@ -76,6 +94,6 @@ proc processUniverse*(name: string, tickers: seq[string]): Future[seq[Quote]] {.
     echo ""
 
   echo "=".repeat(95)
-  echo "Total de activos: ", results.len, " | Sobre SMA50: ", results.countIt(it.aboveSma50)
+  echo "Total de activos: ", results.len, " | Sobre SMA", cfg.smaPeriod, ": ", results.countIt(it.aboveSma50)
 
   result = results

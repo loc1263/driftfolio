@@ -1,6 +1,6 @@
 ## Salida por consola: colores (M-013), barra de progreso y tabla de pesos.
 
-import std/[terminal, strutils, algorithm, sequtils, strformat]
+import std/[terminal, strutils, algorithm, sequtils, strformat, unicode]
 
 let useColor* = isatty(stdout)
 
@@ -14,7 +14,11 @@ proc writeColored*(value: float, width: int) =
     stdout.styledWrite(fgRed, s)
 
 proc writeAboveStr*(above: bool, width: int) =
-  let s = align((if above: "Sí" else: "No"), width)
+  # "Sí" tiene una tilde de 2 bytes en UTF-8 que strutils.align cuenta como
+  # 2 caracteres (cuenta bytes, no runas visibles), así que le da un espacio
+  # de relleno de menos que a "No" y queda desalineado. unicode.align cuenta
+  # runas, no bytes, y alinea igual que "No".
+  let s = unicode.align((if above: "Sí" else: "No"), width)
   if above and useColor:
     stdout.styledWrite(fgGreen, s)
   else:
@@ -36,12 +40,17 @@ proc clearProgress*() =
     stdout.write("\r" & " ".repeat(60) & "\r")
     stdout.flushFile()
 
-proc printWeights*(tickers: seq[string], weights: seq[float], minWeight = 0.0) =
+proc printWeights*(tickers: seq[string], weights: seq[float], minWeight = 0.0, useAbs = false) =
+  ## `useAbs = true` filtra por `|peso| > minWeight` en vez de `peso >
+  ## minWeight`, para no esconder posiciones cortas (M-014): el portafolio
+  ## "sin restricciones" puede tener pesos negativos, y con el filtro por
+  ## signo quedaban completamente fuera de la tabla sin ningún aviso.
   var order = toSeq(0 ..< weights.len)
   order.sort(proc (a, b: int): int = cmp(weights[b], weights[a]))
 
   echo fmt"""{"Ticker":<12} {"Peso %":>10}"""
   echo "-".repeat(24)
   for i in order:
-    if weights[i] > minWeight:
+    let shown = if useAbs: abs(weights[i]) > minWeight else: weights[i] > minWeight
+    if shown:
       echo fmt"{tickers[i]:<12} {weights[i] * 100:>10.2f}"

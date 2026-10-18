@@ -6,9 +6,8 @@ MEJORAS.md
 /driftfolio.exe
 *.exe
 
-# Salidas generadas en cada corrida
-driftfolio_resultados.csv
-driftfolio_resultados.html
+# Salidas generadas en cada corrida (output/<fecha-hora>/, ver src/driftfolio.nim)
+/output/
 driftfolio_errors.log
 out.txt
 

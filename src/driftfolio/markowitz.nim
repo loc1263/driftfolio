@@ -5,19 +5,25 @@
 ##       da más peso a los datos recientes sin descartar la historia larga
 
 import std/[asyncdispatch, strformat, strutils, sequtils, math]
-import ./types, ./linalg, ./marketdata, ./display, ./htmlreport, ./errorlog
+import ./types, ./linalg, ./marketdata, ./display, ./htmlreport, ./errorlog, ./config
 
-const
-  DispatchIntervalMs = 200
-  MarkowitzTopN* = 15
-  MarkowitzLookbackYears* = 5
-  EwmaLambda = 0.94
-  MaxWeightPerAsset = 0.20
-  # Portafolio concentrado: re-optimiza sobre los N activos de mayor momentum
-  # (no es un recorte de los pesos del portafolio de MarkowitzTopN activos,
-  # ver nota en runMarkowitz) con un tope por posición más holgado.
-  MarkowitzFinalN = 4
-  FinalPortfolioCap = 0.40
+const DispatchIntervalMs = 200
+# Los parámetros del portafolio (topN, histórico, EWMA lambda, tope por
+# posición, portafolio concentrado) son configurables (M-006): ver
+# config.Config y config.DefaultConfig para los valores de fábrica.
+
+proc dispatchHistoryDownload(ticker: string, lookbackDays: int): Future[seq[float]] =
+  ## proc de nivel superior a propósito (no una closure armada inline dentro
+  ## del `for` de runMarkowitz): si el callback se arma ahí, Nim reusa la
+  ## misma variable de loop entre iteraciones y TODOS los callbacks terminan
+  ## imprimiendo el último ticker dispatchado en vez del que realmente
+  ## completaron cada uno — es justo el bug que reportó el usuario (el mismo
+  ## ticker repetido N veces seguidas en "Descargado: X"). Al recibir
+  ## `ticker` como parámetro, cada llamada tiene su propio stack frame y el
+  ## closure de abajo captura ESE valor, no una referencia compartida.
+  result = fetchPrices(ticker, lookbackDays)
+  result.addCallback proc() =
+    echo "  Descargado: ", ticker
 
 proc calcLogReturns(prices: seq[float]): seq[float] =
   result = newSeq[float](prices.len - 1)
@@ -92,29 +98,32 @@ proc portfolioStats*(weights, mu: seq[float], cov: seq[seq[float]],
   let sharpe = if vol > 0: (ret - riskFreeRate) / vol else: 0.0
   (ret, vol, sharpe)
 
-proc runMarkowitz*(topQuotes: seq[Quote]): Future[string] {.async.} =
+proc runMarkowitz*(topQuotes: seq[Quote],
+                    lookbackYears = DefaultConfig.markowitzLookbackYears,
+                    ewmaLambda = DefaultConfig.ewmaLambda,
+                    maxWeightPerAsset = DefaultConfig.maxWeightPerAsset,
+                    finalN = DefaultConfig.markowitzFinalN,
+                    finalPortfolioCap = DefaultConfig.finalPortfolioCap): Future[string] {.async.} =
   echo "\n", "=".repeat(95)
-  echo "MARKOWITZ - MEJOR PORTAFOLIO (top ", topQuotes.len, " por momentum, covarianza EWMA ", MarkowitzLookbackYears, " años)"
+  echo "MARKOWITZ - MEJOR PORTAFOLIO (top ", topQuotes.len, " por momentum, covarianza EWMA ", lookbackYears, " años)"
   echo "=".repeat(95)
 
   let riskFreeRate = await fetchRiskFreeRate()
   echo fmt"Tasa libre de riesgo (^IRX, 13 semanas): {riskFreeRate * 100:.2f}%"
 
-  let lookbackDays = 365 * MarkowitzLookbackYears
+  let lookbackDays = 365 * lookbackYears
 
   # Pipeline de descargas (M-009): se despacha una petición nueva cada
   # DispatchIntervalMs sin esperar la respuesta anterior, igual que en
   # ranking.processUniverse. El mensaje se imprime cuando cada descarga
   # realmente termina (callback), no al despacharla, para que refleje el
   # avance real en vez de aparecer todo junto apenas se lanzan las peticiones.
-  echo "Descargando histórico de ", MarkowitzLookbackYears, " años para ", topQuotes.len, " activos..."
+  echo "Descargando histórico de ", lookbackYears, " años para ", topQuotes.len, " activos..."
   var futs = newSeq[Future[seq[float]]](topQuotes.len)
   for idx, q in topQuotes:
     let ticker = q.ticker
     let wasAlreadyCached = isPriceCached(ticker, lookbackDays)
-    futs[idx] = fetchPrices(ticker, lookbackDays)
-    futs[idx].addCallback proc() =
-      echo "  Descargado: ", ticker
+    futs[idx] = dispatchHistoryDownload(ticker, lookbackDays)
     if idx < topQuotes.len - 1 and not wasAlreadyCached:
       await sleepAsync(DispatchIntervalMs)
 
@@ -153,7 +162,7 @@ proc runMarkowitz*(topQuotes: seq[Quote]): Future[string] {.async.} =
       row[i] = alignedReturns[i][day]
     returnsMatrix.add(row)
 
-  let cov = ewmaCovariance(returnsMatrix, EwmaLambda)
+  let cov = ewmaCovariance(returnsMatrix, ewmaLambda)
 
   # Portafolio de máximo Sharpe: w ∝ Σ⁻¹ (μ - rf), no Σ⁻¹ μ
   var muExcess = newSeq[float](numAssets)
@@ -172,7 +181,7 @@ proc runMarkowitz*(topQuotes: seq[Quote]): Future[string] {.async.} =
     weights[i] = x[i] / sumX
 
   echo "\n--- Sin restricciones (teórico, permite posiciones en corto) ---"
-  printWeights(tickers, weights)
+  printWeights(tickers, weights, useAbs = true)
 
   let (portReturn, portVolAnnual, sharpe) = portfolioStats(weights, muByTicker, cov, riskFreeRate)
 
@@ -188,9 +197,9 @@ proc runMarkowitz*(topQuotes: seq[Quote]): Future[string] {.async.} =
   # convergía en silencio a pesos que no suman 100%. Se sube el tope al
   # mínimo que la hace factible, igual que ya hacía el portafolio
   # concentrado más abajo, y se deja registrado si tuvo que subir.
-  let loCap = max(MaxWeightPerAsset, 1.0 / numAssets.float)
-  if loCap > MaxWeightPerAsset:
-    logError(fmt"Tope por posición subido de {MaxWeightPerAsset * 100:.0f}% a {loCap * 100:.0f}% " &
+  let loCap = max(maxWeightPerAsset, 1.0 / numAssets.float)
+  if loCap > maxWeightPerAsset:
+    logError(fmt"Tope por posición subido de {maxWeightPerAsset * 100:.0f}% a {loCap * 100:.0f}% " &
       fmt"porque solo hay {numAssets} activos (con el tope original los pesos no podrían sumar 100%).")
 
   let loWeights = optimizeLongOnlyCapped(muExcess, cov, loCap)
@@ -207,7 +216,7 @@ proc runMarkowitz*(topQuotes: seq[Quote]): Future[string] {.async.} =
   echo fmt"Sharpe (vs. tasa libre de riesgo): {loSharpe:.2f}"
 
   let fullHtml = markowitzHtmlSection(tickers, urls, weights, loWeights, riskFreeRate, loCap,
-    MarkowitzLookbackYears,
+    lookbackYears,
     (ret: portReturn, vol: portVolAnnual, sharpe: sharpe),
     (ret: loPortReturn, vol: loPortVolAnnual, sharpe: loSharpe))
 
@@ -218,19 +227,19 @@ proc runMarkowitz*(topQuotes: seq[Quote]): Future[string] {.async.} =
   # para ese subconjunto sigue siendo válida porque la EWMA se calcula por
   # par de activos, así que no hace falta descargar ni recalcular nada.
   var concentratedHtml = ""
-  if numAssets >= MarkowitzFinalN:
-    let cap = max(FinalPortfolioCap, 1.0 / MarkowitzFinalN.float)
-    let subCov = subMatrix(cov, MarkowitzFinalN)
-    let subMuExcess = muExcess[0 ..< MarkowitzFinalN]
-    let subTickers = tickers[0 ..< MarkowitzFinalN]
-    let subUrls = urls[0 ..< MarkowitzFinalN]
-    let subMu = muByTicker[0 ..< MarkowitzFinalN]
+  if numAssets >= finalN:
+    let cap = max(finalPortfolioCap, 1.0 / finalN.float)
+    let subCov = subMatrix(cov, finalN)
+    let subMuExcess = muExcess[0 ..< finalN]
+    let subTickers = tickers[0 ..< finalN]
+    let subUrls = urls[0 ..< finalN]
+    let subMu = muByTicker[0 ..< finalN]
 
     let concWeights = optimizeLongOnlyCapped(subMuExcess, subCov, cap)
     let concStats = portfolioStats(concWeights, subMu, subCov, riskFreeRate)
 
     echo ""
-    echo fmt"--- Portafolio concentrado: top {MarkowitzFinalN} por momentum, re-optimizado (tope {cap * 100:.0f}% por posición) ---"
+    echo fmt"--- Portafolio concentrado: top {finalN} por momentum, re-optimizado (tope {cap * 100:.0f}% por posición) ---"
     printWeights(subTickers, concWeights, -1.0)
     echo "-".repeat(24)
     echo fmt"Retorno esperado (proxy score momentum): {concStats.ret * 100:.2f}%"
@@ -239,6 +248,6 @@ proc runMarkowitz*(topQuotes: seq[Quote]): Future[string] {.async.} =
 
     concentratedHtml = concentratedHtmlSection(subTickers, subUrls, concWeights, concStats, cap, loCap, numAssets)
   else:
-    logError(fmt"No hay suficientes activos ({numAssets}) para armar el portafolio concentrado de {MarkowitzFinalN}.")
+    logError(fmt"No hay suficientes activos ({numAssets}) para armar el portafolio concentrado de {finalN}.")
 
   fullHtml & concentratedHtml
