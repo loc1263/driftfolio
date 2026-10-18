@@ -201,9 +201,16 @@ const ExtraStyle = """
   .kpi-value a { color: var(--text); }
   .kpi-sub { font-size: 0.72rem; color: var(--muted); font-weight: 500; }
 
-  table { min-width: 960px; }
+  /* Tabla compacta: 15 columnas no entran cómodas a 960px, así que en vez
+     de dejarlas con scroll horizontal (feo y poco usable) se reduce letra,
+     padding y anchos mínimos para que entre entera en el ancho normal de
+     la página. .table-wrap conserva overflow-x:auto como red de seguridad
+     solo para pantallas muy angostas (celular). */
+  table { font-size: 0.7rem; }
+  thead th { padding: 5px 5px; font-size: 0.57rem; }
+  tbody td { padding: 3px 5px; }
   thead th:nth-child(2), thead th:nth-child(3), thead th:nth-child(4), thead th:nth-child(13) { text-align: left; }
-  tbody td:nth-child(3) { white-space: normal; min-width: 180px; font-variant-numeric: normal; }
+  tbody td:nth-child(3) { white-space: normal; min-width: 96px; font-variant-numeric: normal; }
   tbody tr:nth-child(even) td.sticky-col { background: var(--row-alt); }
   tbody tr:hover td.sticky-col { background: var(--accent-soft); }
   tbody tr.top3 { background: color-mix(in srgb, var(--good) 7%, var(--panel)); }
@@ -211,16 +218,16 @@ const ExtraStyle = """
   td:nth-child(2), td:nth-child(3), td:nth-child(4), td:nth-child(13) { text-align: left; }
 
   .sticky-col { position: sticky; background: var(--panel); z-index: 1; }
-  .col-rank { left: 0; width: 34px; min-width: 34px; }
-  .col-ticker { left: 34px; min-width: 88px; box-shadow: 2px 0 0 0 var(--border) inset; }
+  .col-rank { left: 0; width: 22px; min-width: 22px; }
+  .col-ticker { left: 22px; min-width: 56px; box-shadow: 2px 0 0 0 var(--border) inset; }
 
-  td.score { min-width: 130px; }
-  .score-cell { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
-  .score-num { font-weight: 700; min-width: 34px; text-align: right; }
+  td.score { min-width: 76px; }
+  .score-cell { display: flex; align-items: center; gap: 4px; justify-content: flex-end; }
+  .score-num { font-weight: 700; min-width: 24px; text-align: right; }
   .score-num.good { color: var(--good); }
   .score-num.mid { color: var(--mid); }
   .score-num.low { color: var(--low); }
-  .score-bar { width: 52px; height: 6px; border-radius: 4px; background: var(--border); overflow: hidden; flex: 0 0 auto; }
+  .score-bar { width: 24px; height: 5px; border-radius: 4px; background: var(--border); overflow: hidden; flex: 0 0 auto; }
   .score-bar-fill { display: block; height: 100%; border-radius: 4px; }
   .score-bar-fill.good { background: var(--good); }
   .score-bar-fill.mid { background: var(--mid); }
@@ -228,7 +235,7 @@ const ExtraStyle = """
 
   .rank-badge {
     display: inline-flex; align-items: center; justify-content: center;
-    width: 20px; height: 20px; border-radius: 50%; font-weight: 700; font-size: 0.72rem;
+    width: 16px; height: 16px; border-radius: 50%; font-weight: 700; font-size: 0.64rem;
     color: #3a2d05;
   }
   .rank-badge.rank-1 { background: #f2c94c; }
@@ -236,7 +243,7 @@ const ExtraStyle = """
   .rank-badge.rank-3 { background: #d9a066; color: #3a2408; }
 
   .badge {
-    display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.72rem;
+    display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 0.64rem;
     font-weight: 700; letter-spacing: 0.01em;
   }
   .badge-buy { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }

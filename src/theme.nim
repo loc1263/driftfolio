@@ -66,7 +66,9 @@ const ThemeBase* = """
     background: linear-gradient(135deg, var(--accent), #6ea8ff);
     color: #fff; font-weight: 700; font-size: 0.8rem; letter-spacing: 0.02em;
     display: flex; align-items: center; justify-content: center;
+    text-decoration: none; transition: opacity 0.15s ease;
   }
+  .logo-mark:hover { opacity: 0.85; text-decoration: none; }
   h1 { font-size: 1.4rem; margin: 0; letter-spacing: -0.01em; }
   .meta { color: var(--muted); font-size: 0.82rem; margin: 6px 0 18px; }
   .quicknav { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 30px; }
@@ -256,7 +258,7 @@ $extrahead
 $togglebutton
 <div class="wrap">
   <div class="masthead">
-    <div class="logo-mark">$logo</div>
+    <a class="logo-mark" href="index.html" title="Volver al inicio">$logo</a>
     <h1>$h1</h1>
   </div>
   <div class="meta">$meta</div>

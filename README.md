@@ -65,11 +65,12 @@ Dentro de la carpeta `output/<fecha-hora>/` de esa corrida deja `analisis_fundam
 
 ### Diseño compartido, tema claro/oscuro y mobile
 
-Las tres páginas de una corrida (`driftfolio_resultados.html`, `analisis_fundamental_resultados.html`, `index.html`) comparten un mismo diseño — colores, masthead, quicknav, tipografía, tablas con scroll horizontal — definido una sola vez en `src/theme.nim` e importado por los tres generadores, para que se sientan como una sola aplicación en vez de tres reportes sueltos.
+Las tres páginas de una corrida (`driftfolio_resultados.html`, `analisis_fundamental_resultados.html`, `index.html`) comparten un mismo diseño — colores, masthead, quicknav, tipografía, tablas — definido una sola vez en `src/theme.nim` e importado por los tres generadores, para que se sientan como una sola aplicación en vez de tres reportes sueltos.
 
 - **Tema claro/oscuro**: cada página trae un botón flotante (arriba a la derecha) que alterna el tema y lo guarda en `localStorage`; por defecto sigue la preferencia del sistema operativo (`prefers-color-scheme`), pero el botón la sobreescribe. La elección se recuerda entre visitas a esa misma carpeta `output/<fecha-hora>/` (cada carpeta es su propio origen de `localStorage`, así que no se comparte entre corridas distintas).
-- **Mobile**: layout responsive con breakpoint a 640px (masthead, quicknav y botón de tema se reacomodan) y cada tabla vive dentro de un contenedor con scroll horizontal propio, así que una tabla ancha nunca rompe el layout de la página en una pantalla angosta.
+- **Mobile**: layout responsive con breakpoint a 640px (masthead, quicknav y botón de tema se reacomodan) y cada tabla vive dentro de un contenedor con scroll horizontal propio, así que una tabla ancha nunca rompe el layout de la página en una pantalla angosta. En la tabla de análisis fundamental (15 columnas) ese scroll ya no aparece en el uso normal de escritorio/laptop: letra y padding compactos la hacen entrar entera; el scroll horizontal del contenedor queda solo como red de seguridad para pantallas de celular muy angostas.
 - **Navegación tipo SPA**: en `driftfolio_resultados.html` y `analisis_fundamental_resultados.html`, el quicknav de arriba (ej. los 4 ítems de la página de momentum: IPSA, Vanguard, mega-cap, Markowitz) funciona como pestañas — clickear uno muestra solo esa sección en el mismo body, sin recargar la página. Soporta deep-link por `#hash` (compartible, entra directo en esa pestaña) y funciona igual sin JavaScript (la primera pestaña ya viene marcada activa en el HTML generado). Implementado en `src/theme.nim` (`renderPage` + `TabScript`), reusado por ambos reportes.
+- **Logo = volver al inicio**: el ícono del masthead ("DF" en momentum, "CF" en fundamental) es un link a `index.html`, la página principal de esa misma carpeta `output/<fecha-hora>/`.
 
 ## Universos configurables (M-001)
 
